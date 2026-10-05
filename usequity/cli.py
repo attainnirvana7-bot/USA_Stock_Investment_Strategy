@@ -77,6 +77,34 @@ def cmd_check_api(cfg, args) -> int:
     return 0 if ok else 1
 
 
+def cmd_probe(cfg, args) -> int:
+    """每個代號只花 1 次請求（年報 limit=1），判斷目前方案是否開放。"""
+    client = _client(cfg)
+    syms = resolve_universe(None, {"universe": "list", "symbols": args.symbols.split(",")})
+    ok, no, other = [], [], []
+    for sym in syms:
+        try:
+            rows = client.income_statement(sym, "annual", 1)
+            (ok if rows else other).append(sym)
+            print(f"  ✅ {sym}" if rows else f"  ❔ {sym}：無資料")
+        except FMPError as e:
+            if e.daily_limit:
+                print(f"  ⛔ 已達每日請求上限，停在 {sym}")
+                break
+            if e.symbol_unsupported:
+                no.append(sym)
+                print(f"  ❌ {sym}：方案不開放")
+            else:
+                other.append(sym)
+                print(f"  ❔ {sym}：{str(e)[:120]}")
+    print(f"\n可用 {len(ok)} 檔：{','.join(ok)}")
+    print(f"不開放 {len(no)} 檔：{','.join(no)}")
+    if other:
+        print(f"無法判斷 {len(other)} 檔：{','.join(other)}")
+    print(f"API 請求 {client.calls} 次")
+    return 0
+
+
 def cmd_crawl(cfg, args) -> int:
     client = _client(cfg)
     store = Store(cfg["storage"]["db_path"])
@@ -207,6 +235,9 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("check-api", help="驗證 API 金鑰與端點權限")
     s.add_argument("--symbol", default="AAPL")
 
+    s = sub.add_parser("probe", help="測試代號是否在目前方案內（每檔 1 次請求）")
+    s.add_argument("--symbols", required=True, help="逗號分隔")
+
     s = sub.add_parser("crawl", help="抓取財報與股價")
     s.add_argument("--symbols", help="逗號分隔，覆寫設定檔股票池")
     s.add_argument("--period", choices=["annual", "quarter"])
@@ -239,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     cfg = load_config(args.config)
     if args.db:
         cfg["storage"]["db_path"] = args.db
-    handlers = {"check-api": cmd_check_api, "crawl": cmd_crawl, "status": cmd_status,
+    handlers = {"check-api": cmd_check_api, "probe": cmd_probe, "crawl": cmd_crawl, "status": cmd_status,
                 "screen": cmd_screen, "backtest": cmd_backtest, "demo": cmd_demo}
     return handlers[args.cmd](cfg, args)
 

@@ -1,0 +1,34 @@
+# 測試一批代號是否在目前 FMP 方案內：每檔只花 1 次請求，不寫資料庫、不影響排程
+name: 測試代號可用性
+
+on:
+  workflow_dispatch:
+    inputs:
+      symbols:
+        description: "代號（逗號分隔）"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+      IN_SYMBOLS: ${{ inputs.symbols }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: 測試
+        run: |
+          set +e
+          python -m usequity.cli probe --symbols "$(echo "$IN_SYMBOLS" | tr -d ' ')" 2>&1 | tee probe.txt
+          rc=${PIPESTATUS[0]}
+          { echo "## 代號可用性"; echo '```'; cat probe.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc

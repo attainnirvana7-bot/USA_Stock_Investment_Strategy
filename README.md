@@ -15,6 +15,7 @@ pip install -r requirements.txt
 export FMP_API_KEY=你的金鑰          # https://site.financialmodelingprep.com/developer/docs
 
 python -m usequity.cli check-api     # 先確認方案支援哪些端點
+python -m usequity.cli probe --symbols AAPL,PG   # 測試代號是否在方案內（每檔 1 次請求）
 python -m usequity.cli crawl         # 依 config.yaml 抓取
 python -m usequity.cli screen        # 最新選股結果
 python -m usequity.cli backtest      # 回測
@@ -41,7 +42,7 @@ streamlit run app.py                 # 網頁介面
 
 主要觸發是 cron-job.org 呼叫 `workflow_dispatch`，body 為 `{"ref":"main","inputs":{"scheduled":"true"}}`
 （設定見 ops-hub 的 `CRON_JOBS.md`）；`scheduled=true` 的行為與排程完全相同（略過 API 權限檢查、一定回測、一定存報告）。
-GitHub 內建排程（週三、六 09:27）只當備援：`guard` job 發現 12 小時內已有成功的排程執行（run 標題帶「· 排程」）就略過，
+GitHub 內建排程（週三、六 09:27、11:47）只當備援：`guard` job 發現 12 小時內已有成功的排程執行（run 標題帶「· 排程」）就略過，
 不會重複耗用 FMP 額度。手動執行（`scheduled` 預設 false）不受影響。
 
 **額度**：免費方案每日約 250 次請求。預設 40 檔在穩定後每次排程約 80–200 次

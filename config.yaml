@@ -14,23 +14,27 @@ storage:
 crawl:
   # 股票池：sp500 / nasdaq100 / dowjones / list（使用下方 symbols）
   universe: list
-  # 美股大型股 40 檔，涵蓋各產業。
-  # 免費方案並非所有代號都開放（實測 PG、HD、AVGO、ORCL、CRM、QCOM、TXN 回 402，已移除）；
-  # 其他不開放的代號會自動記錄，30 天內不再嘗試。
+  # 美股大型股 40 檔，全部已實測在 FMP 免費方案內（2026-10-03，以 probe 指令確認）。
+  # 免費方案只開放部分代號；新增前先跑「測試代號可用性」workflow（每檔 1 次請求）。
+  # 實測不開放（勿加入）：PG HD AVGO ORCL CRM QCOM TXN IBM MA BRK-B LLY MRK TMO ABT MCD CAT HON UNP LIN
+  #   AXP BLK MS SCHW SPGI AMGN BMY CVS DHR GILD ISRG MDT MMM RTX UPS DE BKNG LOW MO PM ACN NOW INTU
+  #   ADP CMCSA COP NEE
+  # 實測可用但未納入：F
   # 額度估算（免費方案每日 250 次）：首次每檔約 6 次；之後每次排程每檔約 2 次（股價、市值），
   # 財報每週更新一次時再加 3 次 → 40 檔每週最多約 200 次。要再加檔數，請先確認不會超過每日上限。
   symbols: [
     # 科技 / 通訊
-    AAPL, MSFT, GOOGL, AMZN, META, NVDA, ADBE, AMD, CSCO, INTC, NFLX, IBM,
+    AAPL, MSFT, GOOGL, AMZN, META, NVDA, ADBE, AMD, CSCO, INTC, NFLX, PLTR, PYPL, UBER, T, VZ,
     # 金融
-    JPM, V, MA, BAC, GS, BRK-B,
-    # 醫療
-    JNJ, UNH, LLY, ABBV, MRK, TMO, ABT, PFE,
+    JPM, V, BAC, GS, C, WFC,
+    # 醫療（免費方案開放的醫療股很少，候選 9 檔全數不開放）
+    JNJ, UNH, ABBV, PFE,
     # 消費
-    KO, PEP, WMT, COST, MCD, NKE, DIS, TSLA,
+    KO, PEP, WMT, COST, NKE, DIS, TSLA, SBUX, TGT,
     # 能源 / 工業
-    XOM, CVX, CAT, HON, UNP, LIN,
+    XOM, CVX, BA, GE, LMT,
   ]
+
   # 財報期別：annual / quarter
   # 免費方案每種報表最多 5 期（程式會自動調降 limit）：年報 = 5 年，季報只有 5 季（僅夠算 2 期 TTM）
   # 所以免費方案建議 annual；付費方案可改 quarter + 40（≈ 10 年），財報更即時
