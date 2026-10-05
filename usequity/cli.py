@@ -145,7 +145,7 @@ def cmd_status(cfg, args) -> int:
     store = Store(cfg["storage"]["db_path"])
     s = store.summary()
     print(f"資料庫：{store.path}")
-    print(f"  代號數 {s['symbols']}，財報列數 {s['statement_rows']}，股價列數 {s['price_rows']}")
+    print(f"  可選股代號 {s['usable']}（資料庫共 {s['symbols']} 個代號），財報列數 {s['statement_rows']}，股價列數 {s['price_rows']}")
     print(f"  股價區間 {s['price_range'][0]} ~ {s['price_range'][1]}，抓取錯誤 {s['errors']} 筆，"
           f"方案不開放代號 {s['unsupported']} 檔")
     errs = store.fetch_log()
