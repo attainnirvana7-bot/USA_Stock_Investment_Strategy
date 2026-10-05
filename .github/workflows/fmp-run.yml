@@ -2,17 +2,25 @@
 # 金鑰放在 Settings → Secrets and variables → Actions → Repository secrets，名稱 FMP_API_KEY
 name: FMP 選股回測
 
+# 排程觸發的 run 標題帶「· 排程」，guard 只看這類 run，手動執行不會讓排程被略過
+run-name: "FMP 選股回測${{ (github.event_name == 'schedule' || inputs.scheduled) && ' · 排程' || '' }}"
+
 on:
-  # 每週三、六 08:17（台北時間）= 週三、六 00:17 UTC，避開整點排程尖峰。
+  # 每週三、六 08:17（台北時間），主要由 cron-job.org 呼叫 workflow_dispatch 並傳入 scheduled=true
+  # （設定見 ops-hub 的 CRON_JOBS.md）；GitHub 內建排程會延遲或整天遺漏，只保留為備援。
   # 週六：美股週五收盤後的完整一週；週三：週中更新股價。
   # 一週兩次也讓 Actions 快取（7 天未使用會被清除）不會過期。
   # GitHub 的排程事件在尖峰時可能延遲數小時甚至被丟棄（2026-10-03 主排程就沒有觸發），
-  # 所以 03:47 UTC（台北 11:47）再排一次備援：當天報告已存在就略過，不重複耗額度。
+  # 兩個備援都經過下方 guard：12 小時內已有成功的排程執行就略過，不重複耗額度。
   schedule:
-    - cron: "17 0 * * 3,6"
-    - cron: "47 3 * * 3,6"
+    - cron: "27 1 * * 3,6"      # 備援：週三、六 09:27（台北）
+    - cron: "47 3 * * 3,6"      # 第二備援：週三、六 11:47（台北）
   workflow_dispatch:
     inputs:
+      scheduled:
+        description: "外部排程器使用：比照排程（略過 API 權限檢查、一定回測、一定存報告），12 小時內已有成功的排程執行就略過"
+        type: boolean
+        default: false
       symbols:
         description: "代號（逗號分隔，留空使用 config.yaml）"
         required: false
@@ -52,26 +60,35 @@ defaults:
     shell: bash
 
 jobs:
-  # 備援排程用：當天（台北時間）的報告已 commit 就不再執行
-  gate:
+  # 重跑會耗 FMP 額度並重寫報告，所以同一時段只跑一次。以「12 小時內有成功的排程 run」判斷，
+  # 延遲的備援跨過午夜也不會誤判；只有成功才算，主要那次失敗時備援會自動重試。
+  guard:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
     outputs:
-      run: ${{ steps.check.outputs.run }}
+      skip: ${{ steps.check.outputs.skip }}
     steps:
-      - uses: actions/checkout@v4
-      - id: check
+      - name: 同一時段已成功則略過
+        id: check
+        if: github.event_name == 'schedule' || inputs.scheduled
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          day=$(TZ=Asia/Taipei date +%F)
-          if [ "${{ github.event_name }}" = "schedule" ] && [ -f "reports/${day:0:4}/$day.md" ]; then
-            echo "今天（$day）的報告已存在，略過這次排程"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
+          since=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          # API 失敗時視為不知道：照常執行，不略過
+          n=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/fmp-run.yml/runs" \
+                -f status=success -f created=">=$since" -f per_page=100 \
+                --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID and (.display_title | endswith(\"· 排程\")))] | length") || n=0
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "::notice::$since 之後已有成功的排程執行，略過本次。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
   run:
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -105,7 +122,7 @@ jobs:
 
       - name: 檢查 API 端點權限
         # 排程執行略過，省下約 10 次請求額度
-        if: github.event_name != 'schedule'
+        if: github.event_name != 'schedule' && !inputs.scheduled
         run: |
           python -m usequity.cli check-api | tee check.txt || true
           { echo "## API 端點權限"; echo '```'; cat check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
@@ -142,7 +159,7 @@ jobs:
           exit $rc
 
       - name: 回測
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.backtest) }}
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.scheduled || inputs.backtest) }}
         run: |
           set +e
           python -m usequity.cli backtest --output results/backtest 2>&1 | tee results/backtest.txt
@@ -151,7 +168,7 @@ jobs:
           exit $rc
 
       - name: 存成報告並 commit
-        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.save_report) }}
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.scheduled || inputs.save_report) }}
         run: |
           set +o pipefail   # 組報告時 grep 沒有符合的行不算失敗
           day=$(TZ=Asia/Taipei date +%F)
