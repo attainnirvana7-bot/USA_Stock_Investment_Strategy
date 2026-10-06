@@ -1,0 +1,74 @@
+# 美股財報爬蟲 / 選股 / 回測設定
+# API 金鑰請設環境變數 FMP_API_KEY，不要寫在這裡。
+
+fmp:
+  base_url: https://financialmodelingprep.com/stable
+  # 每分鐘請求上限：免費方案每日 250 次，Starter 300 次/分，依方案調整
+  requests_per_minute: 250
+  timeout: 30
+  max_retries: 3
+
+storage:
+  db_path: data/usequity.db
+
+crawl:
+  # 股票池：sp500 / nasdaq100 / dowjones / list（使用下方 symbols）
+  universe: list
+  # 美股大型股 40 檔，全部已實測在 FMP 免費方案內（2026-10-03，以 probe 指令確認）。
+  # 免費方案只開放部分代號；新增前先跑「測試代號可用性」workflow（每檔 1 次請求）。
+  # 實測不開放（勿加入）：PG HD AVGO ORCL CRM QCOM TXN IBM MA BRK-B LLY MRK TMO ABT MCD CAT HON UNP LIN
+  #   AXP BLK MS SCHW SPGI AMGN BMY CVS DHR GILD ISRG MDT MMM RTX UPS DE BKNG LOW MO PM ACN NOW INTU
+  #   ADP CMCSA COP NEE
+  # 實測可用但未納入：F
+  # 額度估算（免費方案每日 250 次）：首次每檔約 6 次；之後每次排程每檔約 2 次（股價、市值），
+  # 財報每週更新一次時再加 3 次 → 40 檔每週最多約 200 次。要再加檔數，請先確認不會超過每日上限。
+  symbols: [
+    # 科技 / 通訊
+    AAPL, MSFT, GOOGL, AMZN, META, NVDA, ADBE, AMD, CSCO, INTC, NFLX, PLTR, PYPL, UBER, T, VZ,
+    # 金融
+    JPM, V, BAC, GS, C, WFC,
+    # 醫療（免費方案開放的醫療股很少，候選 9 檔全數不開放）
+    JNJ, UNH, ABBV, PFE,
+    # 消費
+    KO, PEP, WMT, COST, NKE, DIS, TSLA, SBUX, TGT,
+    # 能源 / 工業
+    XOM, CVX, BA, GE, LMT,
+  ]
+
+  # 財報期別：annual / quarter
+  # 免費方案每種報表最多 5 期（程式會自動調降 limit）：年報 = 5 年，季報只有 5 季（僅夠算 2 期 TTM）
+  # 所以免費方案建議 annual；付費方案可改 quarter + 40（≈ 10 年），財報更即時
+  period: annual
+  statement_limit: 40
+  price_start: "2014-01-01"
+  benchmark: SPY
+  # 快取有效期（小時），期間內不重抓
+  ttl_hours:
+    statements: 144            # 6 天：每週六排程會重抓財報，週三那次沿用
+    prices: 20
+    profile: 720
+
+screen:
+  # 硬性篩選條件（全部 AND），欄位名稱見 README「可用因子」
+  filters:
+    - "market_cap > 10e9"
+    - "roe > 0.10"
+    - "debt_to_equity < 2"
+  # 排名權重：正值越大越好，負值越小越好
+  rank:
+    earnings_yield: 1.0
+    fcf_yield: 1.0
+    roe: 1.0
+    gross_margin: 0.5
+    revenue_growth: 0.5
+    momentum_12_1: 1.0
+  top_n: 5
+
+backtest:
+  start: "2016-01-01"
+  end: null                    # null = 資料最後一天
+  rebalance: quarterly         # monthly / quarterly / annual
+  weighting: equal             # equal / rank
+  cost_bps: 10                 # 單邊交易成本（基點）
+  # 財報若無 filingDate，假設報告期結束後多少天才公開，避免前視偏差
+  filing_lag_days: 45

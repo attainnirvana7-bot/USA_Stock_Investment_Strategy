@@ -1,0 +1,42 @@
+# main 的程式碼更新時，連同快取中的最新資料庫重新發布到 streamlit 分支（不抓新資料、不耗 API 額度）
+name: 發布 Streamlit
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["reports/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-streamlit
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安裝套件
+        run: pip install cryptography
+
+      - name: 還原資料庫
+        uses: actions/cache/restore@v4
+        with:
+          path: data/usequity.db
+          key: usequity-db-none
+          restore-keys: usequity-db-
+
+      - name: 發布到 streamlit 分支
+        env:
+          DB_KEY: ${{ secrets.DB_KEY }}
+        run: scripts/publish_streamlit.sh

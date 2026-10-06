@@ -1,0 +1,215 @@
+# 在 GitHub Actions 上執行：抓取 FMP 資料 → 選股 → 回測
+# 金鑰放在 Settings → Secrets and variables → Actions → Repository secrets，名稱 FMP_API_KEY
+name: FMP 選股回測
+
+# 排程觸發的 run 標題帶「· 排程」，guard 只看這類 run，手動執行不會讓排程被略過
+run-name: "FMP 選股回測${{ (github.event_name == 'schedule' || inputs.scheduled) && ' · 排程' || '' }}"
+
+on:
+  # 每週三、六 08:17（台北時間），主要由 cron-job.org 呼叫 workflow_dispatch 並傳入 scheduled=true
+  # （設定見 ops-hub 的 CRON_JOBS.md）；GitHub 內建排程會延遲或整天遺漏，只保留為備援。
+  # 週六：美股週五收盤後的完整一週；週三：週中更新股價。
+  # 一週兩次也讓 Actions 快取（7 天未使用會被清除）不會過期。
+  # GitHub 的排程事件在尖峰時可能延遲數小時甚至被丟棄（2026-10-03 主排程就沒有觸發），
+  # 兩個備援都經過下方 guard：12 小時內已有成功的排程執行就略過，不重複耗額度。
+  schedule:
+    - cron: "27 1 * * 3,6"      # 備援：週三、六 09:27（台北）
+    - cron: "47 3 * * 3,6"      # 第二備援：週三、六 11:47（台北）
+  workflow_dispatch:
+    inputs:
+      scheduled:
+        description: "外部排程器使用：比照排程（略過 API 權限檢查、一定回測、一定存報告），12 小時內已有成功的排程執行就略過"
+        type: boolean
+        default: false
+      symbols:
+        description: "代號（逗號分隔，留空使用 config.yaml）"
+        required: false
+        default: ""
+      period:
+        description: "財報期別（免費方案每種報表最多 5 期，建議 annual）"
+        type: choice
+        options: [config, quarter, annual]
+        default: config
+      datasets:
+        description: "資料集（逗號分隔，留空為全部；市值端點不支援時填 profile,statements,prices）"
+        required: false
+        default: ""
+      force:
+        description: "忽略快取，全部重抓"
+        type: boolean
+        default: false
+      backtest:
+        description: "執行回測"
+        type: boolean
+        default: true
+      save_report:
+        description: "將結果 commit 到 reports/（排程執行一律會存）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fmp-run
+  cancel-in-progress: false
+
+defaults:
+  run:
+    # 明確指定 bash 才會啟用 pipefail，否則 `指令 | tee` 會吞掉指令的失敗
+    shell: bash
+
+jobs:
+  # 重跑會耗 FMP 額度並重寫報告，所以同一時段只跑一次。以「12 小時內有成功的排程 run」判斷，
+  # 延遲的備援跨過午夜也不會誤判；只有成功才算，主要那次失敗時備援會自動重試。
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: 同一時段已成功則略過
+        id: check
+        if: github.event_name == 'schedule' || inputs.scheduled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          since=$(date -u -d '12 hours ago' +%Y-%m-%dT%H:%M:%SZ)
+          # API 失敗時視為不知道：照常執行，不略過
+          n=$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/fmp-run.yml/runs" \
+                -f status=success -f created=">=$since" -f per_page=100 \
+                --jq "[.workflow_runs[] | select(.id != $GITHUB_RUN_ID and (.display_title | endswith(\"· 排程\")))] | length") || n=0
+          if [ "${n:-0}" -gt 0 ]; then
+            echo "::notice::$since 之後已有成功的排程執行，略過本次。"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  run:
+    needs: guard
+    if: needs.guard.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
+      PYTHONUNBUFFERED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: 安裝套件
+        run: pip install -r requirements.txt
+
+      - name: 確認金鑰
+        run: |
+          if [ -z "$FMP_API_KEY" ]; then
+            echo "::error::找不到 FMP_API_KEY，請到 Settings → Secrets and variables → Actions 新增 Repository secret"
+            exit 1
+          fi
+
+      # 資料庫存在 Actions 快取中跨次累積，未過期的資料不會重抓（節省 API 額度）
+      - name: 還原資料庫
+        uses: actions/cache@v4
+        with:
+          path: data/usequity.db
+          key: usequity-db-${{ github.run_id }}
+          restore-keys: usequity-db-
+
+      - name: 檢查 API 端點權限
+        # 排程執行略過，省下約 10 次請求額度
+        if: github.event_name != 'schedule' && !inputs.scheduled
+        run: |
+          python -m usequity.cli check-api | tee check.txt || true
+          { echo "## API 端點權限"; echo '```'; cat check.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 抓取資料
+        # 輸入值經環境變數傳入，不直接嵌進指令，避免被當成 shell 語法
+        env:
+          IN_SYMBOLS: ${{ inputs.symbols }}
+          IN_PERIOD: ${{ inputs.period }}
+          IN_DATASETS: ${{ inputs.datasets }}
+          IN_FORCE: ${{ inputs.force }}
+        run: |
+          args=()
+          if [ -n "$IN_SYMBOLS" ]; then args+=(--symbols "$(echo "$IN_SYMBOLS" | tr -d ' ')"); fi
+          if [ -n "$IN_PERIOD" ] && [ "$IN_PERIOD" != "config" ]; then args+=(--period "$IN_PERIOD"); fi
+          if [ -n "$IN_DATASETS" ]; then args+=(--datasets "$(echo "$IN_DATASETS" | tr -d ' ')"); fi
+          if [ "$IN_FORCE" = "true" ]; then args+=(--force); fi
+          set +e
+          python -m usequity.cli crawl "${args[@]}" 2>&1 | tee crawl.txt
+          rc=${PIPESTATUS[0]}
+          python -m usequity.cli status | tee status.txt
+          { echo "## 資料庫"; echo '```'; grep -v '^\[[0-9]*/' crawl.txt | tail -n 30; echo; cat status.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          # 部分代號失敗（exit 2）只警告，不中斷後續選股
+          if [ "$rc" = "2" ]; then echo "::warning::部分資料抓取失敗，詳見 Summary"; exit 0; fi
+          exit $rc
+
+      - name: 選股
+        run: |
+          mkdir -p results
+          set +e
+          python -m usequity.cli screen --output results/screen.csv 2>&1 | tee results/screen.txt
+          rc=${PIPESTATUS[0]}
+          { echo "## 選股結果"; echo '```'; cat results/screen.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: 回測
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.scheduled || inputs.backtest) }}
+        run: |
+          set +e
+          python -m usequity.cli backtest --output results/backtest 2>&1 | tee results/backtest.txt
+          rc=${PIPESTATUS[0]}
+          { echo "## 回測結果"; echo '```'; cat results/backtest.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit $rc
+
+      - name: 存成報告並 commit
+        if: ${{ !cancelled() && (github.event_name == 'schedule' || inputs.scheduled || inputs.save_report) }}
+        run: |
+          set +o pipefail   # 組報告時 grep 沒有符合的行不算失敗
+          day=$(TZ=Asia/Taipei date +%F)
+          dir="reports/${day:0:4}"
+          mkdir -p "$dir"
+          f="$dir/$day.md"
+          {
+            echo "# 選股回測報告 $day"
+            echo
+            echo "觸發方式：${{ github.event_name }}　執行紀錄：${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo "## 資料"; echo '```'; grep -v '^\[[0-9]*/' crawl.txt | grep -v 'WARNING' | tail -n 15; cat status.txt | head -n 3; echo '```'
+            echo "## 選股結果"; echo '```'; cat results/screen.txt 2>/dev/null || echo "（未產生）"; echo '```'
+            echo "## 回測結果"; echo '```'; cat results/backtest.txt 2>/dev/null || echo "（未產生）"; echo '```'
+            echo
+            echo "> 股票池為現今大型股，回測有倖存者偏差；結果僅供研究參考。"
+          } > "$f"
+          [ -f results/screen.csv ] && cp results/screen.csv "$dir/$day-screen.csv"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add reports/
+          if git diff --cached --quiet; then echo "報告無變化"; exit 0; fi
+          git commit -m "report: $day"
+          for i in 1 2 3; do
+            git pull --rebase -q origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && break
+            sleep $((i * 5))
+          done
+
+      - name: 發布到 streamlit 分支
+        # 只從 main 發布，避免測試分支的資料蓋掉線上介面
+        if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+        env:
+          DB_KEY: ${{ secrets.DB_KEY }}
+        run: scripts/publish_streamlit.sh
+
+      - name: 上傳結果
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: results-${{ github.run_number }}
+          # repo 公開時 artifact 可被任何登入者下載，因此不含資料庫
+          path: results/
+          if-no-files-found: ignore
+          retention-days: 30
