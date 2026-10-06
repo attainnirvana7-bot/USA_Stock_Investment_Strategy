@@ -223,6 +223,10 @@ class Store:
         with self._conn() as c:
             return {
                 "symbols": len(self.symbols()),
+                # 同時有財報與股價、可用於選股的代號（不含只留下公司資料或「不開放」紀錄的代號、基準指數）
+                "usable": c.execute(
+                    "SELECT COUNT(DISTINCT symbol) FROM statements "
+                    "WHERE symbol IN (SELECT DISTINCT symbol FROM prices)").fetchone()[0],
                 "statement_rows": c.execute("SELECT COUNT(*) FROM statements").fetchone()[0],
                 "price_rows": c.execute("SELECT COUNT(*) FROM prices").fetchone()[0],
                 "price_range": c.execute("SELECT MIN(date), MAX(date) FROM prices").fetchone(),

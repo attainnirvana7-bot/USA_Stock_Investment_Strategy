@@ -189,3 +189,17 @@ def test_daily_limit_aborts_crawl(store):
     fc._hit = hit
     rep = Crawler(fc, store, {}).run(["AAA", "BBB"])
     assert rep.aborted and "BBB" not in store.symbols()
+
+
+def test_summary_usable_excludes_unsupported(store):
+    fc = FakeClient()
+
+    def hit(name, sym):
+        fc.calls += 1
+        if sym == "PG" and name == "statements":
+            raise FMPError(SYMBOL_402, 402)
+    fc._hit = hit
+    Crawler(fc, store, {"benchmark": "SPY"}).run(["AAA", "PG"])
+    s = store.summary()
+    # PG 只留下公司資料、SPY 只有股價：都不算可選股
+    assert s["usable"] == 1 and s["symbols"] == 2

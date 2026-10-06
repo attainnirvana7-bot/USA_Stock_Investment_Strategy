@@ -174,7 +174,7 @@ def page_data():
     store = Store(db_path())
     s = store.summary()
     c = st.columns(4)
-    c[0].metric("代號數", s["symbols"])
+    c[0].metric("可選股代號", s["usable"], help=f"同時有財報與股價的代號；資料庫共記錄 {s['symbols']} 個代號")
     c[1].metric("財報列數", f"{s['statement_rows']:,}")
     c[2].metric("股價列數", f"{s['price_rows']:,}")
     c[3].metric("抓取錯誤", s["errors"])
@@ -396,7 +396,7 @@ with st.sidebar:
     if Path(db_path()).exists():
         s = Store(db_path()).summary()
         if s["price_range"][1]:
-            st.caption(f"資料至 {s['price_range'][1]}　共 {s['symbols']} 檔")
+            st.caption(f"資料至 {s['price_range'][1]}　可選股 {s['usable']} 檔")
     st.caption("資料來源：[Financial Modeling Prep](https://site.financialmodelingprep.com/developer/docs)")
 
 {"資料爬取": page_data, "選股": page_screen, "回測": page_backtest}[page]()
